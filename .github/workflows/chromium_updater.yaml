@@ -1,12 +1,13 @@
-name: Chromium Snapshot Fetcher
+name: Chromium Snapshot Fetcher (High Frequency)
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # Checks for updates every 6 hours
-  workflow_dispatch: # Allows manual triggering from the Actions tab
+    # Runs every 5 minutes
+    - cron: '*/5 * * * *'
+  workflow_dispatch: 
 
 permissions:
-  contents: write # Required for the bot to create a release
+  contents: write
 
 jobs:
   fetch-and-release:
@@ -16,50 +17,42 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Fetch Latest Revision Number
+      - name: Fetch Latest Revision
         id: get_rev
         run: |
-          # Fetch LAST_CHANGE without the generation parameter to always get the latest
           REV=$(curl -s "https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/AndroidDesktop_arm64%2FLAST_CHANGE?alt=media")
           echo "revision=$REV" >> $GITHUB_ENV
-          echo "Fetched upstream revision: $REV"
 
-      - name: Check if Release Already Exists
+      - name: Check for Existing Release
         id: check_release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Use GitHub CLI to check if we already released this version
           if gh release view "v${{ env.revision }}" > /dev/null 2>&1; then
-            echo "Release v${{ env.revision }} already exists. Stopping."
             echo "exists=true" >> $GITHUB_ENV
           else
-            echo "New revision found. Proceeding with download."
             echo "exists=false" >> $GITHUB_ENV
           fi
 
-      - name: Download and Extract APK
+      - name: Process Chromium Artifacts
         if: env.exists == 'false'
         run: |
-          echo "Downloading chrome-android-desktop.zip..."
-          wget -q "https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/AndroidDesktop_arm64%2F${{ env.revision }}%2Fchrome-android-desktop.zip?alt=media" -O chrome-android-desktop.zip
-
-          echo "Unzipping archive..."
-          unzip -q chrome-android-desktop.zip
-
-          echo "Locating APK..."
-          # Find the APK file extracted from the zip
-          APK_PATH=$(find . -type f -name "*.apk" | head -n 1)
-
-          if [ -z "$APK_PATH" ]; then
-            echo "Error: No APK found in the downloaded zip."
-            exit 1
-          fi
-
-          # Rename the APK cleanly for the GitHub release
-          APK_NAME="ChromiumSnapshot-arm64-${{ env.revision }}.apk"
-          mv "$APK_PATH" "./$APK_NAME"
-          echo "apk_file=$APK_NAME" >> $GITHUB_ENV
+          # Download the full desktop zip
+          wget -q "https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/AndroidDesktop_arm64%2F${{ env.revision }}%2Fchrome-android-desktop.zip?alt=media" -O chromium.zip
+          
+          # Extract all files
+          unzip -q chromium.zip
+          
+          # Create a staging directory for clean naming
+          mkdir -p release_artifacts
+          
+          # Locate and rename all 4 APKs to include the revision number
+          find . -name "*.apk" -exec cp {} release_artifacts/ \;
+          
+          cd release_artifacts
+          for f in *.apk; do
+            mv "$f" "${{ env.revision }}-$f"
+          done
 
       - name: Create GitHub Release
         if: env.exists == 'false'
@@ -68,5 +61,5 @@ jobs:
         run: |
           gh release create "v${{ env.revision }}" \
             --title "Chromium Snapshot ${{ env.revision }}" \
-            --notes "Automated fetch and extraction for AndroidDesktop_arm64 revision ${{ env.revision }}." \
-            "./${{ env.apk_file }}"
+            --notes "Automated 5-minute sync. Includes all 4 extracted APKs." \
+            ./release_artifacts/*.apk
