@@ -1,4 +1,4 @@
-name: Chromium Snapshot Fetcher
+name: Chromium Snapshot Fetcher (Dual Arch)
 
 on:
   schedule:
@@ -19,6 +19,7 @@ jobs:
       - name: Fetch Latest Revision
         id: get_rev
         run: |
+          # Fetching revision from arm64; snapshots are usually synced across archs
           REV=$(curl -s "https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/AndroidDesktop_arm64%2FLAST_CHANGE?alt=media")
           echo "revision=$REV" >> $GITHUB_ENV
 
@@ -36,30 +37,33 @@ jobs:
       - name: Process Chromium Artifacts
         if: env.exists == 'false'
         run: |
-          # The %2F is the URL encoded slash for the API path
-          DOWNLOAD_URL="https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/AndroidDesktop_arm64%2F${{ env.revision }}%2Fchrome-android-desktop.zip?alt=media"
-          
-          echo "Attempting to download from: $DOWNLOAD_URL"
-          
-          # Retry up to 3 times with a 30s delay in case the file isn't ready yet
-          for i in {1..3}; do
-            wget -q "$DOWNLOAD_URL" -O chromium.zip && break || sleep 30
-          done
-
-          if [ ! -f chromium.zip ]; then
-            echo "Error: Download failed after retries. The revision might not be ready on Google servers yet."
-            exit 1
-          fi
-
-          unzip -o chromium.zip
           mkdir -p final_apks
           
-          # Gather all 4 APKs from the extracted zip
-          find . -name "*.apk" -exec cp {} ./final_apks/ \;
+          # List of architectures to fetch
+          ARCHS=("AndroidDesktop_arm64" "AndroidDesktop_x64")
           
-          cd final_apks
-          for f in *.apk; do
-            mv "$f" "${{ env.revision }}-$f"
+          for ARCH in "${ARCHS[@]}"; do
+            echo "Processing $ARCH..."
+            DOWNLOAD_URL="https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/${ARCH}%2F${{ env.revision }}%2Fchrome-android-desktop.zip?alt=media"
+            
+            # Retry loop for reliability
+            for i in {1..3}; do
+              wget -q "$DOWNLOAD_URL" -O "${ARCH}.zip" && break || sleep 30
+            done
+
+            if [ -f "${ARCH}.zip" ]; then
+              # Extract to a temp folder named after the arch to avoid collisions
+              unzip -o "${ARCH}.zip" -d "$ARCH"
+              
+              # Find APKs and move them with arch and revision in the name
+              # e.g., 1627712-arm64-ChromePublic.apk
+              find "./$ARCH" -name "*.apk" -exec bash -c '
+                ARCH_LABEL=$(echo "'$ARCH'" | cut -d"_" -f2)
+                cp "$1" "./final_apks/${{ env.revision }}-${ARCH_LABEL}-$(basename "$1")"
+              ' _ {} \;
+            else
+              echo "Warning: Could not download $ARCH. Skipping."
+            fi
           done
 
       - name: Create GitHub Release
@@ -67,7 +71,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "v${{ env.revision }}" \
-            --title "Chromium Snapshot ${{ env.revision }}" \
-            --notes "Automated 5-minute sync. Includes all 4 extracted APKs for revision ${{ env.revision }}." \
-            ./final_apks/*.apk
+          # Check if we actually have files to upload
+          if [ "$(ls -A ./final_apks/)" ]; then
+            gh release create "v${{ env.revision }}" \
+              --title "Chromium Snapshot ${{ env.revision }}" \
+              --notes "Automated sync for revision ${{ env.revision }}. Includes arm64 and x64 builds." \
+              ./final_apks/*.apk
+          else
+            echo "No APKs found to release."
+            exit 1
+          fi
