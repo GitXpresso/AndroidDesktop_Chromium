@@ -36,25 +36,38 @@ jobs:
       - name: Process Chromium Artifacts
         if: env.exists == 'false'
         run: |
-          wget -q "https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/AndroidDesktop_arm64/${{ env.revision }}/chrome-android-desktop.zip?alt=media" -O chromium.zip
-          unzip -o chromium.zip
+          # The %2F is the URL encoded slash for the API path
+          DOWNLOAD_URL="https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/AndroidDesktop_arm64%2F${{ env.revision }}%2Fchrome-android-desktop.zip?alt=media"
           
+          echo "Attempting to download from: $DOWNLOAD_URL"
+          
+          # Retry up to 3 times with a 30s delay in case the file isn't ready yet
+          for i in {1..3}; do
+            wget -q "$DOWNLOAD_URL" -O chromium.zip && break || sleep 30
+          done
+
+          if [ ! -f chromium.zip ]; then
+            echo "Error: Download failed after retries. The revision might not be ready on Google servers yet."
+            exit 1
+          fi
+
+          unzip -o chromium.zip
           mkdir -p final_apks
-          # Find all APKs and move them to a flat folder with the revision prefix
+          
+          # Gather all 4 APKs from the extracted zip
           find . -name "*.apk" -exec cp {} ./final_apks/ \;
           
           cd final_apks
           for f in *.apk; do
             mv "$f" "${{ env.revision }}-$f"
           done
-          ls -R # This will show in logs if the files actually exist
 
       - name: Create GitHub Release
-        if: env.exists == 'false'
+        if: env.exists == 'false' && success()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "v${{ env.revision }}" \
             --title "Chromium Snapshot ${{ env.revision }}" \
-            --notes "Automated 5-minute sync for revision ${{ env.revision }}." \
+            --notes "Automated 5-minute sync. Includes all 4 extracted APKs for revision ${{ env.revision }}." \
             ./final_apks/*.apk
