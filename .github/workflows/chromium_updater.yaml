@@ -1,9 +1,8 @@
-name: Chromium Snapshot Fetcher (High Frequency)
+name: Chromium Snapshot Fetcher
 
 on:
   schedule:
-    # Runs every 5 minutes
-    - cron: '*/2 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch: 
 
 permissions:
@@ -37,22 +36,18 @@ jobs:
       - name: Process Chromium Artifacts
         if: env.exists == 'false'
         run: |
-          # Download the full desktop zip
-          wget -q "https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/AndroidDesktop_arm64%2F${{ env.revision }}%2Fchrome-android-desktop.zip?alt=media" -O chromium.zip
+          wget -q "https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/AndroidDesktop_arm64/${{ env.revision }}/chrome-android-desktop.zip?alt=media" -O chromium.zip
+          unzip -o chromium.zip
           
-          # Extract all files
-          unzip -q chromium.zip
+          mkdir -p final_apks
+          # Find all APKs and move them to a flat folder with the revision prefix
+          find . -name "*.apk" -exec cp {} ./final_apks/ \;
           
-          # Create a staging directory for clean naming
-          mkdir -p release_artifacts
-          
-          # Locate and rename all 4 APKs to include the revision number
-          find . -name "*.apk" -exec cp {} release_artifacts/ \;
-          
-          cd release_artifacts
+          cd final_apks
           for f in *.apk; do
             mv "$f" "${{ env.revision }}-$f"
           done
+          ls -R # This will show in logs if the files actually exist
 
       - name: Create GitHub Release
         if: env.exists == 'false'
@@ -61,5 +56,5 @@ jobs:
         run: |
           gh release create "v${{ env.revision }}" \
             --title "Chromium Snapshot ${{ env.revision }}" \
-            --notes "Automated 5-minute sync. Includes all 4 extracted APKs." \
-            ./release_artifacts/*.apk
+            --notes "Automated 5-minute sync for revision ${{ env.revision }}." \
+            ./final_apks/*.apk
